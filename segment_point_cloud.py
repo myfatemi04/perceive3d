@@ -78,7 +78,12 @@ class SamPointCloudSegmenter():
         coordinates = coordinates[valid_mask]
 
         # Filter out outliers.
-        min_pt, max_pt, _inliers = get_bounding_box_ransac(segmented_points, min_inliers=len(segmented_points) * 0.8, max_iterations=10)
+        min_pt, max_pt, _inliers = get_bounding_box_ransac(
+            segmented_points,
+            min_inliers=len(segmented_points) * 0.95,
+            n_hypothetical_inliers=16,
+            max_iterations=10
+        )
 
         # print("Considering", supplementary_point_cloud.shape[0], "points in the supplementary point cloud...")
 
@@ -142,9 +147,21 @@ class SamPointCloudSegmenter():
             if transferred_segmentation_masks is None:
                 continue
 
+            point_cloud = supplementary_point_cloud[transferred_segmentation_masks[0]]
+            color = np.array(supplementary_rgb_image)[transferred_segmentation_masks[0]]
+
+            min_pt, max_pt, inliers = get_bounding_box_ransac(
+                point_cloud,
+                min_inliers=len(point_cloud) * 0.95,
+                n_hypothetical_inliers=8,
+                max_iterations=10
+            )
+            point_cloud = point_cloud[inliers]
+            color = color[inliers]
+
             # Add the resulting points.
-            point_clouds.append(supplementary_point_cloud[transferred_segmentation_masks[0]])
-            colors.append(np.array(supplementary_rgb_image)[transferred_segmentation_masks[0]])
+            point_clouds.append(point_cloud)
+            colors.append(color)
             segmentation_masks.append(transferred_segmentation_masks[0])
 
         point_cloud = np.concatenate(point_clouds).reshape(-1, 3)
@@ -200,13 +217,27 @@ def test():
 
     point_cloud, color, segmentation_masks = segmenter.segment(base_rgb_image, base_point_cloud, bounding_box, supplementary_rgb_images, supplementary_point_clouds)
 
+    # Visualize the resulting object segmentation.
+    fig = plt.figure()
+    plt.title("Pre-RANSAC")
+    ax = fig.add_subplot(projection='3d')
+    ax.scatter(point_cloud[:, 0], point_cloud[:, 1], point_cloud[:, 2], c=color/255.0, s=0.5)
+    set_axes_equal(ax)
+    plt.show()
+
     # Filter the point cloud using RANSAC again.
-    min_pt, max_pt, inliers = get_bounding_box_ransac(point_cloud, min_inliers=len(point_cloud) * 0.8, max_iterations=10)
+    min_pt, max_pt, inliers = get_bounding_box_ransac(
+        point_cloud,
+        min_inliers=len(point_cloud) * 0.98, 
+        n_hypothetical_inliers=8,
+        max_iterations=10
+    )
     point_cloud = point_cloud[inliers]
     color = color[inliers]
 
     # Visualize the resulting object segmentation.
     fig = plt.figure()
+    plt.title("Post-RANSAC")
     ax = fig.add_subplot(projection='3d')
     ax.scatter(point_cloud[:, 0], point_cloud[:, 1], point_cloud[:, 2], c=color/255.0, s=0.5)
     set_axes_equal(ax)
@@ -223,4 +254,4 @@ if __name__ == '__main__':
 # 745 405 796 515
 
 # Stop Button
-# 904 508 983 579
+# 904 495 983 579

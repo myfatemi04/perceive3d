@@ -1,6 +1,6 @@
 import numpy as np
 
-def get_bounding_box_ransac(points, min_inliers, max_iterations=10):
+def get_bounding_box_ransac(points, min_inliers, n_hypothetical_inliers, max_iterations=10):
     """
     We want to get a bounding box without worrying about a couple points messing us up
     (for example, depth detections from far away, that correspond to misclassified/missegmented
@@ -8,7 +8,7 @@ def get_bounding_box_ransac(points, min_inliers, max_iterations=10):
     """
 
     for iteration in range(max_iterations):
-        selection = np.random.uniform(0, 1, size=points.shape[0]).argsort()[:8]
+        selection = np.random.uniform(0, 1, size=points.shape[0]).argsort()[:n_hypothetical_inliers]
         selected_points = points[selection]
 
         # Find bounding box of selected points
