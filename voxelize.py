@@ -19,7 +19,7 @@ def voxelize(point_cloud, colors, box_bounds, voxel_size):
     voxels = np.zeros((*grid_dims, 4), dtype=float)
     # print(voxelized_point_cloud[mask], grid_dims)
     voxels[..., :-1][tuple(voxelized_point_cloud[mask].T)] = colors[mask] / 255.0
-    voxels[..., -1] = occupancy > 1 # / (np.max(occupancy) + 1e-6)
+    voxels[..., -1] = occupancy # / (np.max(occupancy) + 1e-6)
 
     return voxels
 

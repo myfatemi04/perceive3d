@@ -45,8 +45,8 @@ def detect_grasps(voxel_occupancy, voxel_size, gripper_width, max_alpha, h=2, ws
             window_max_z = max_z[x - ws:x + ws, y - ws:y + ws]
             zmin = np.min(window_min_z) - 1
             zmax = np.max(window_max_z) + 1
-            
-            if zmin == 9999 or zmax == 0:
+
+            if np.max(window_min_z) == 10000 or np.min(window_max_z) == -1:
                 continue
 
             # get normal vector at this point.
@@ -64,19 +64,18 @@ def detect_grasps(voxel_occupancy, voxel_size, gripper_width, max_alpha, h=2, ws
             alpha_lower = min(alpha_lower, 180 - alpha_lower)
             alpha_upper = min(alpha_upper, 180 - alpha_upper)
 
-            if x == 16 and y == 8:
-                print(alpha_lower, alpha_upper)
-                print(lower_norm, upper_norm)
-                print(window_min_z)
-                print(window_max_z)
-
+            # if x == 16 and y == 8:
+            #     print(alpha_lower, alpha_upper)
+            #     print(lower_norm, upper_norm)
+            #     print(window_min_z)
+            #     print(window_max_z)
 
             # then, calculate alpha
             # finally, see if it's inside or outside the friction cone
             # will just assume that if |alpha| < 15deg, we're fine
             contact_distance = (zmax - zmin) * voxel_size
-            if np.abs(alpha_lower) < max_alpha and np.abs(alpha_upper) < max_alpha and contact_distance < gripper_width:
-                grasp_locations.append((x, y, zmin, zmax))
+            if max(np.abs(alpha_lower), np.abs(alpha_upper)) < max_alpha and contact_distance < gripper_width:
+                grasp_locations.append((x, y, zmin, zmax, alpha_lower, alpha_upper))
 
     return grasp_locations
 

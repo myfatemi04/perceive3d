@@ -13,7 +13,8 @@ def find_valid_point(pcd, xy, r=10):
         xy[1] - r : xy[1] + r,
         xy[0] - r : xy[0] + r
     ]
-    mask = ~(roi_xyz == -10000).any(axis=-1)
+    mask = ~((roi_xyz == -10000).any(axis=-1))
+    print(roi_xyz[mask])
     return np.median(roi_xyz[mask], axis=0)
 
 def smoothen_pcd(pcd):
@@ -21,7 +22,7 @@ def smoothen_pcd(pcd):
     pcd_smooth[pcd == -10000] = -10000
     return pcd_smooth
 
-with open("capture_2.pkl", "rb") as f:
+with open("capture_1.pkl", "rb") as f:
     (rgbs, pcds) = pickle.load(f)
 
 # smoothen pcds
@@ -73,18 +74,22 @@ if show_pcd:
     set_axes_equal(ax)
     plt.show()
 
+
 lower_bound, upper_bound = np.min(object_points, axis=0), np.max(object_points, axis=0)
 voxel_size = 0.005
+min_points_in_voxel = 2
 
 # Voxelize the point cloud.
 voxelized = voxelize(object_points, object_point_colors, (lower_bound, upper_bound), voxel_size)
 
-table_z_index = int((-center_xyz[2] - lower_bound[2]) / voxel_size)
+# table_z_index = int((-center_xyz[2] - lower_bound[2]) / voxel_size)
+table_z_index = 0
 voxelized[:, :, table_z_index] = [0, 0, 0, 1]
 
 voxel_occupancy = np.zeros(voxelized.shape[:-1], dtype=bool)
-voxel_occupancy[voxelized[..., -1] > 0] = True
-voxel_color = voxelized
+voxel_occupancy[voxelized[..., -1] >= min_points_in_voxel] = True
+voxel_color = voxelized.copy()
+voxel_color[..., -1] = 1.0
 
 fig = plt.figure()
 ax: plt.Axes = fig.add_subplot(projection='3d')
@@ -124,29 +129,36 @@ for i in range(8):
     # apply rotation matrix to points
     rotated_object_points = object_points @ rotation_matrix.T
     lower_bound_, upper_bound_ = np.min(rotated_object_points, axis=0), np.max(rotated_object_points, axis=0)
-    voxel_color_ = voxelize(rotated_object_points, object_point_colors, (lower_bound_, upper_bound_), voxel_size)
+    voxels_ = voxelize(rotated_object_points, object_point_colors, (lower_bound_, upper_bound_), voxel_size)
 
-    ws = int(0.01 / voxel_size + 0.5) # round up
+    ws = 2 # int(0.01 / voxel_size + 0.5) # round up
     h = 1 # 2
     gripper_width = 0.2
 
-    voxel_occupancy_ = (voxel_color_[:, :, :, -1] > 0)
+    voxel_occupancy_ = (voxels_[:, :, :, -1] >= min_points_in_voxel)
     max_alpha = 15
     grasps_voxelized = detect_grasps(voxel_occupancy_, voxel_size, gripper_width, max_alpha, h, ws)
     # translate these into the original frame.
     # these are in (x, y, zmin, zmax) format.
     grasps_from_this = []
-    for (x, y, zmin, zmax) in grasps_voxelized:
+    for (x, y, zmin, zmax, alpha_lower, alpha_upper) in grasps_voxelized:
         start = (np.array([x, y, zmin]) * voxel_size + lower_bound_) @ rotation_matrix
         end = (np.array([x, y, zmax]) * voxel_size + lower_bound_) @ rotation_matrix
-        grasps_from_this.append((start, end))
+        worst_alpha = max(abs(alpha_lower), abs(alpha_upper))
+        grasps_from_this.append((worst_alpha, start, end))
 
-    grasps.extend(grasps_from_this)
+    # select top grasps by force closure
+    grasps_from_this.sort(key=lambda x: x[0])
 
-    if show_rotated_voxel_clouds:
+    grasps.extend([(start, end) for (_, start, end) in grasps_from_this[:5]])
+
+    if True:# show_rotated_voxel_clouds:
         fig = plt.figure()
         ax: plt.Axes = fig.add_subplot(projection='3d')
         ax.set_title(f"Rotation Angle: $\\frac{{{i}\\pi}}{{8}}$")
+
+        voxel_color_ = voxels_.copy()
+        voxel_color_[..., -1] = 1.0
         ax.voxels(voxel_occupancy_, facecolors=voxel_color_, edgecolor=(1, 1, 1, 0.1)) # type: ignore
         ax.set_xlabel('x')
         ax.set_ylabel('y')
