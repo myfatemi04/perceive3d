@@ -2,11 +2,12 @@
 Segment point clouds using SAM.
 """
 
-from typing import List
+from typing import List, Tuple
 
-from matplotlib import pyplot as plt
 import numpy as np
 import PIL.Image as Image
+import torch
+from matplotlib import pyplot as plt
 from transformers import SamModel, SamProcessor
 
 
@@ -17,7 +18,7 @@ class SamPointCloudSegmenter():
         self.render_2d_results = render_2d_results
         self.device = device
 
-    def _segment_image(self, image: Image.Image, input_points=None, input_boxes=None):
+    def _segment_image(self, image: Image.Image, input_points=None, input_boxes=None) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         inputs = self.processor(images=[image], input_points=input_points, input_boxes=input_boxes, return_tensors="pt").to(self.device)
         outputs = self.model(**inputs)
         masks = self.processor.image_processor.post_process_masks( # type: ignore
@@ -35,13 +36,17 @@ class SamPointCloudSegmenter():
                 y = [point[1] for point in input_points]
                 plt.scatter(x, y, color='red', label='Input points')
             elif input_boxes is not None:
-                for input_box in input_boxes:
+                for input_box in input_boxes[0]:
                     x1, y1, x2, y2 = input_box
                     plt.plot([x1, x1, x2, x2, x1], [y1, y2, y2, y1, y1], color='blue', label='Input box')
             
             for mask in masks:
-                plt.imshow(mask, alpha=0.5)
+                plt.imshow(mask[0, 0].detach().cpu().numpy(), alpha=0.5)
+
+            plt.legend()
             plt.show()
+
+        masks = [mask[0, 0] for mask in masks]
 
         return (masks, scores)
 
@@ -61,17 +66,18 @@ class SamPointCloudSegmenter():
         # Finds nearby points in the supplementary image.
         n1 = segmented_points.shape[0]
         # Filter out invalid points in the supplementary image.
-        w, h = supplementary_rgb_image.size
+        w = supplementary_rgb_image.width
+        h = supplementary_rgb_image.height
         coordinates = np.zeros((h, w, 2))
-        coordinates[..., 0] = np.arange(w)[None, :].repeat(h, w)
-        coordinates[..., 1] = np.arange(h)[:, None].repeat(h, w)
+        coordinates[..., 0] = np.arange(w)[None, :].repeat(h, axis=0)
+        coordinates[..., 1] = np.arange(h)[:, None].repeat(w, axis=1)
         valid_mask = ~(supplementary_point_cloud == -10000).any(axis=-1)
         supplementary_point_cloud = supplementary_point_cloud[valid_mask] # (n2, 4)
         coordinates = coordinates[valid_mask]
         n2 = supplementary_point_cloud.shape[0]
         # Calculates distance between all pairs of points.
         # Could definitely be optimized. Matrix shape: (n1, n2)
-        dists = np.linalg.norm(segmented_points[:, None, 3].repeat((1, n2, 1)) - supplementary_point_cloud[None, :, 3].repeat((n1, 1, 1)), axis=-1)
+        dists = np.linalg.norm(segmented_points[:, None, :].repeat(n2, axis=1) - supplementary_point_cloud[None, :, :].repeat(n1, axis=0), axis=-1)
         # Get the right coordinates
         coordinates[(dists < max_distance).any(axis=0)]
         # Construct a bounding box
@@ -80,18 +86,18 @@ class SamPointCloudSegmenter():
         x2 = np.max(coordinates[:, 0])
         y2 = np.max(coordinates[:, 1])
 
-        transferred_segmentation = self._segment_image(supplementary_rgb_image, input_boxes=[[x1, y1, x2, y2]])
+        transferred_segmentation = self._segment_image(supplementary_rgb_image, input_boxes=[[[x1, y1, x2, y2]]])
 
         return transferred_segmentation
 
-    def segment(self, base_rgb_image: Image.Image, base_point_cloud: np.ndarray, prompt_bounding_box: np.ndarray, supplementary_rgb_images: List[Image.Image], supplementary_point_clouds: List[np.ndarray]):
+    def segment(self, base_rgb_image: Image.Image, base_point_cloud: np.ndarray, prompt_bounding_box: List[int], supplementary_rgb_images: List[Image.Image], supplementary_point_clouds: List[np.ndarray]):
         """
         Given a base RGB + point cloud image, and a prompt for that image,
         segment the point cloud using the SAM model. Then, fill out the point
         cloud using the other images.
         """
 
-        base_segmentation_masks, base_segmentation_scores = self._segment_image(base_rgb_image, input_boxes=[prompt_bounding_box])
+        base_segmentation_masks, base_segmentation_scores = self._segment_image(base_rgb_image, input_boxes=[[prompt_bounding_box]])
         base_segmentation_cloud = base_point_cloud[base_segmentation_masks[0]]
 
         point_clouds = [base_segmentation_cloud]
@@ -99,7 +105,7 @@ class SamPointCloudSegmenter():
         # Transfer the segmentation to the other point clouds.
         for supplementary_rgb_image, supplementary_point_cloud in zip(supplementary_rgb_images, supplementary_point_clouds):
             (transferred_segmentation_masks, transferred_segmentation_scores) = \
-                self.transfer_segmentation(base_segmentation_masks[0], base_point_cloud, supplementary_rgb_image, supplementary_point_cloud)
+                self.transfer_segmentation(base_segmentation_masks[0].detach().cpu().numpy(), base_point_cloud, supplementary_rgb_image, supplementary_point_cloud)
             
             # Add the resulting points.
             point_clouds.append(supplementary_point_cloud[transferred_segmentation_masks[0]])
@@ -109,3 +115,45 @@ class SamPointCloudSegmenter():
         point_cloud = point_cloud[valid]
 
         return np.ascontiguousarray(point_cloud)
+
+def test():
+    import pickle
+
+    with open("capture_0.pkl", "rb") as f:
+        (rgbs, pcds) = pickle.load(f)
+        rgbs = [Image.fromarray(rgb) for rgb in rgbs]
+
+    segmenter = SamPointCloudSegmenter(render_2d_results=True)
+
+    for i in range(len(rgbs)):
+        plt.subplot(1, len(rgbs), 1 + i)
+        plt.title("RGB Image " + str(i))
+        plt.imshow(rgbs[i]) # type: ignore
+        plt.axis('off')
+
+    plt.show()
+
+    print("Please select an image to segment based on.")
+    target = int(input("Target: "))
+
+    base_rgb_image = rgbs[target]
+    base_point_cloud = pcds[target]
+    supplementary_rgb_images = [rgbs[i] for i in range(2) if i != target]
+    supplementary_point_clouds = [pcds[i] for i in range(2) if i != target]
+
+    print("Please type the bounding box coordinates.")
+    plt.title("Selected RGB image")
+    plt.imshow(base_rgb_image) # type: ignore
+    plt.axis('off')
+    plt.show()
+
+    x1, y1, x2, y2 = [int(x) for x in input("Bounding box: ").split()]
+    bounding_box = [x1, y1, x2, y2]
+
+    segmenter.segment(base_rgb_image, base_point_cloud, bounding_box, supplementary_rgb_images, supplementary_point_clouds)
+
+
+if __name__ == '__main__':
+    test()
+
+# 651 491 685 535
