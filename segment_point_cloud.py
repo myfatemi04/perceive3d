@@ -8,8 +8,9 @@ import numpy as np
 import PIL.Image as Image
 import torch
 from matplotlib import pyplot as plt
-from transformers import SamModel, SamProcessor
+from ransac import get_bounding_box_ransac
 from set_axes_equal import set_axes_equal
+from transformers import SamModel, SamProcessor
 
 
 class SamPointCloudSegmenter():
@@ -55,8 +56,7 @@ class SamPointCloudSegmenter():
                               segmentation: np.ndarray,
                               base_point_cloud: np.ndarray,
                               supplementary_rgb_image: Image.Image,
-                              supplementary_point_cloud: np.ndarray,
-                              max_distance=0.02):
+                              supplementary_point_cloud: np.ndarray):
         """
         Takes a segmentation mask for a given point cloud, and generates a prompt to segment another point cloud.
         """
@@ -77,24 +77,34 @@ class SamPointCloudSegmenter():
         supplementary_point_cloud = supplementary_point_cloud[valid_mask] # (n2, 4)
         coordinates = coordinates[valid_mask]
 
-        print("Considering", supplementary_point_cloud.shape[0], "points in the supplementary point cloud...")
+        # Filter out outliers.
+        min_pt, max_pt, _inliers = get_bounding_box_ransac(segmented_points, min_inliers=len(segmented_points) * 0.8, max_iterations=10)
 
-        max_pt = np.max(segmented_points, axis=0)
-        min_pt = np.min(segmented_points, axis=0)
-        radius = np.linalg.norm(max_pt - min_pt, axis=-1)
-        # Filter to only consider points within the radius
-        valid_mask = np.linalg.norm(supplementary_point_cloud - (max_pt + min_pt) / 2, axis=-1) < (radius + max_distance)
-        supplementary_point_cloud = supplementary_point_cloud[valid_mask]
-        coordinates = coordinates[valid_mask]
+        # print("Considering", supplementary_point_cloud.shape[0], "points in the supplementary point cloud...")
 
-        print("Filtered to", supplementary_point_cloud.shape[0], "points in the supplementary point cloud...")
+        # radius = np.linalg.norm(max_pt - min_pt, axis=-1) / 2
+        # # Filter to only consider points within the radius
+        # valid_mask = np.linalg.norm(supplementary_point_cloud - (max_pt + min_pt) / 2, axis=-1) < (radius + max_distance)
+        # supplementary_point_cloud = supplementary_point_cloud[valid_mask]
+        # coordinates = coordinates[valid_mask]
 
-        n2 = supplementary_point_cloud.shape[0]
-        # Calculates distance between all pairs of points.
-        # Could definitely be optimized. Matrix shape: (n1, n2)
-        dists = np.linalg.norm(segmented_points[:, None, :].repeat(n2, axis=1) - supplementary_point_cloud[None, :, :].repeat(n1, axis=0), axis=-1)
+        # print("Filtered to", supplementary_point_cloud.shape[0], "points in the supplementary point cloud...")
+
+        # n2 = supplementary_point_cloud.shape[0]
+        # # Calculates distance between all pairs of points.
+        # # Could definitely be optimized. Matrix shape: (n1, n2)
+        # dists = np.linalg.norm(segmented_points[:, None, :].repeat(n2, axis=1) - supplementary_point_cloud[None, :, :].repeat(n1, axis=0), axis=-1)
         # Get the right coordinates
-        coordinates = coordinates[(dists < max_distance).any(axis=0)]
+        # coordinates = coordinates[(dists < max_distance).any(axis=0)]
+
+        # Filter to coordinates that fall in the same bounding box.
+        mask = ((min_pt < supplementary_point_cloud) & (supplementary_point_cloud < max_pt)).all(axis=-1)
+        coordinates = coordinates[mask]
+
+        if not np.any(mask):
+            print("No points found in the bounding box.")
+            return (None, None)
+
         # Construct a bounding box
         x1 = np.min(coordinates[:, 0])
         y1 = np.min(coordinates[:, 1])
@@ -118,8 +128,10 @@ class SamPointCloudSegmenter():
 
         base_segmentation_masks, base_segmentation_scores = self._segment_image(base_rgb_image, input_boxes=[[prompt_bounding_box]])
         base_segmentation_cloud = base_point_cloud[base_segmentation_masks[0]]
+        base_segmentation_cloud_color = np.array(base_rgb_image)[base_segmentation_masks[0]]
 
         point_clouds = [base_segmentation_cloud]
+        colors = [base_segmentation_cloud_color]
         segmentation_masks = [base_segmentation_masks[0]]
 
         # Transfer the segmentation to the other point clouds.
@@ -129,13 +141,16 @@ class SamPointCloudSegmenter():
             
             # Add the resulting points.
             point_clouds.append(supplementary_point_cloud[transferred_segmentation_masks[0]])
+            colors.append(np.array(supplementary_rgb_image)[transferred_segmentation_masks[0]])
             segmentation_masks.append(transferred_segmentation_masks[0])
 
         point_cloud = np.concatenate(point_clouds).reshape(-1, 3)
+        color = np.concatenate(colors).reshape(-1, 3)
         valid = ~(point_cloud == -10000).any(axis=-1)
         point_cloud = point_cloud[valid]
+        color = color[valid]
 
-        return (np.ascontiguousarray(point_cloud), segmentation_masks)
+        return (np.ascontiguousarray(point_cloud), np.ascontiguousarray(color), segmentation_masks)
 
 def test():
     import pickle
@@ -143,6 +158,15 @@ def test():
     with open("capture_0.pkl", "rb") as f:
         (rgbs, pcds) = pickle.load(f)
         rgbs = [Image.fromarray(rgb) for rgb in rgbs]
+
+    # Fix improper calibration.
+    mask0 = pcds[0] == -10000
+    mask1 = pcds[1] == -10000
+    pcds[0][..., 0] += 0.05
+    pcds[0][..., 2] += 0.015
+    pcds[1][..., 2] += 0.015
+    pcds[0][mask0] = -10000
+    pcds[1][mask1] = -10000
 
     segmenter = SamPointCloudSegmenter(render_2d_results=True)
 
@@ -171,12 +195,17 @@ def test():
     x1, y1, x2, y2 = [int(x) for x in input("Bounding box: ").split()]
     bounding_box = [x1, y1, x2, y2]
 
-    point_cloud, segmentation_masks = segmenter.segment(base_rgb_image, base_point_cloud, bounding_box, supplementary_rgb_images, supplementary_point_clouds)
+    point_cloud, color, segmentation_masks = segmenter.segment(base_rgb_image, base_point_cloud, bounding_box, supplementary_rgb_images, supplementary_point_clouds)
+
+    # Filter the point cloud using RANSAC again.
+    min_pt, max_pt, inliers = get_bounding_box_ransac(point_cloud, min_inliers=len(point_cloud) * 0.8, max_iterations=10)
+    point_cloud = point_cloud[inliers]
+    color = color[inliers]
 
     # Visualize the resulting object segmentation.
     fig = plt.figure()
     ax = fig.add_subplot(projection='3d')
-    ax.scatter(point_cloud[:, 0], point_cloud[:, 1], point_cloud[:, 2], s=0.5)
+    ax.scatter(point_cloud[:, 0], point_cloud[:, 1], point_cloud[:, 2], c=color/255.0, s=0.5)
     set_axes_equal(ax)
     plt.show()
 
@@ -184,5 +213,11 @@ def test():
 if __name__ == '__main__':
     test()
 
+# Purple Block
 # 651 491 685 535
+
+# TJ Tumbler
 # 745 405 796 515
+
+# Stop Button
+# 904 508 983 579
