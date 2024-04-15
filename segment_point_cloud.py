@@ -4,6 +4,7 @@ Segment point clouds using SAM.
 
 from typing import List, Tuple
 
+import cv2
 import numpy as np
 import PIL.Image as Image
 import torch
@@ -132,8 +133,15 @@ class SamPointCloudSegmenter():
         """
 
         base_segmentation_masks, base_segmentation_scores = self._segment_image(base_rgb_image, input_boxes=[[prompt_bounding_box]])
-        base_segmentation_cloud = base_point_cloud[base_segmentation_masks[0]]
-        base_segmentation_cloud_color = np.array(base_rgb_image)[base_segmentation_masks[0]]
+
+        mask = base_segmentation_masks[0].detach().cpu().numpy().astype(np.uint8)
+            # Slightly erode the mask to account for segmentation error.
+        mask = cv2.erode(mask, np.ones((3, 3), np.uint8), mask, iterations=3) # type: ignore
+        mask = mask.astype(bool)
+
+        base_segmentation_cloud = base_point_cloud[mask]
+        base_segmentation_cloud_color = np.array(base_rgb_image)[mask]
+        base_mask = mask
 
         point_clouds = [base_segmentation_cloud]
         colors = [base_segmentation_cloud_color]
@@ -142,22 +150,18 @@ class SamPointCloudSegmenter():
         # Transfer the segmentation to the other point clouds.
         for supplementary_rgb_image, supplementary_point_cloud in zip(supplementary_rgb_images, supplementary_point_clouds):
             (transferred_segmentation_masks, transferred_segmentation_scores) = \
-                self.transfer_segmentation(base_segmentation_masks[0].detach().cpu().numpy(), base_point_cloud, supplementary_rgb_image, supplementary_point_cloud)
+                self.transfer_segmentation(base_mask, base_point_cloud, supplementary_rgb_image, supplementary_point_cloud)
             
             if transferred_segmentation_masks is None:
                 continue
 
-            point_cloud = supplementary_point_cloud[transferred_segmentation_masks[0]]
-            color = np.array(supplementary_rgb_image)[transferred_segmentation_masks[0]]
+            mask = transferred_segmentation_masks[0].detach().cpu().numpy().astype(np.uint8)
+            # Slightly erode the mask to account for segmentation error.
+            mask = cv2.erode(mask, np.ones((3, 3), np.uint8), mask, iterations=3) # type: ignore
+            mask = mask.astype(bool)
 
-            min_pt, max_pt, inliers = get_bounding_box_ransac(
-                point_cloud,
-                min_inliers=len(point_cloud) * 0.95,
-                n_hypothetical_inliers=8,
-                max_iterations=10
-            )
-            point_cloud = point_cloud[inliers]
-            color = color[inliers]
+            point_cloud = supplementary_point_cloud[mask]
+            color = np.array(supplementary_rgb_image)[mask]
 
             # Add the resulting points.
             point_clouds.append(point_cloud)
