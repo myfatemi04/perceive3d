@@ -3,6 +3,7 @@ import pickle
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import PIL.Image as Image
 from detect_grasps import detect_grasps
 from set_axes_equal import set_axes_equal
 from voxelize import voxelize
@@ -22,8 +23,12 @@ def smoothen_pcd(pcd):
     pcd_smooth[pcd == -10000] = -10000
     return pcd_smooth
 
-with open("capture_1.pkl", "rb") as f:
+capture_num = 1
+with open(f"capture_{capture_num}.pkl", "rb") as f:
     (rgbs, pcds) = pickle.load(f)
+
+for i in range(2):
+    Image.fromarray(rgbs[i]).save(f"capture_{capture_num}_rgb_{i}.png")
 
 # smoothen pcds
 pcds = [smoothen_pcd(pcd) for pcd in pcds]
@@ -37,11 +42,14 @@ if show_rgb:
     plt.axis('off')
     plt.show()
 
-
 # correct for calibration error [duct tape fix; should create more robust solution]
+mask0 = pcds[0] == -10000
+mask1 = pcds[1] == -10000
 pcds[0][..., 0] += 0.05
 pcds[0][..., 2] += 0.015
 pcds[1][..., 2] += 0.015
+pcds[0][mask0] = -10000
+pcds[1][mask1] = -10000
 
 # Select nearby points from the other point cloud.
 if show_rgb:
