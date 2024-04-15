@@ -9,6 +9,7 @@ import PIL.Image as Image
 import torch
 from matplotlib import pyplot as plt
 from transformers import SamModel, SamProcessor
+from set_axes_equal import set_axes_equal
 
 
 class SamPointCloudSegmenter():
@@ -72,21 +73,39 @@ class SamPointCloudSegmenter():
         coordinates[..., 0] = np.arange(w)[None, :].repeat(h, axis=0)
         coordinates[..., 1] = np.arange(h)[:, None].repeat(w, axis=1)
         valid_mask = ~(supplementary_point_cloud == -10000).any(axis=-1)
+
         supplementary_point_cloud = supplementary_point_cloud[valid_mask] # (n2, 4)
         coordinates = coordinates[valid_mask]
+
+        print("Considering", supplementary_point_cloud.shape[0], "points in the supplementary point cloud...")
+
+        max_pt = np.max(segmented_points, axis=0)
+        min_pt = np.min(segmented_points, axis=0)
+        radius = np.linalg.norm(max_pt - min_pt, axis=-1)
+        # Filter to only consider points within the radius
+        valid_mask = np.linalg.norm(supplementary_point_cloud - (max_pt + min_pt) / 2, axis=-1) < (radius + max_distance)
+        supplementary_point_cloud = supplementary_point_cloud[valid_mask]
+        coordinates = coordinates[valid_mask]
+
+        print("Filtered to", supplementary_point_cloud.shape[0], "points in the supplementary point cloud...")
+
         n2 = supplementary_point_cloud.shape[0]
         # Calculates distance between all pairs of points.
         # Could definitely be optimized. Matrix shape: (n1, n2)
         dists = np.linalg.norm(segmented_points[:, None, :].repeat(n2, axis=1) - supplementary_point_cloud[None, :, :].repeat(n1, axis=0), axis=-1)
         # Get the right coordinates
-        coordinates[(dists < max_distance).any(axis=0)]
+        coordinates = coordinates[(dists < max_distance).any(axis=0)]
         # Construct a bounding box
         x1 = np.min(coordinates[:, 0])
         y1 = np.min(coordinates[:, 1])
         x2 = np.max(coordinates[:, 0])
         y2 = np.max(coordinates[:, 1])
 
+        print("Segmenting based on bounding box", [x1, y1, x2, y2])
+
         transferred_segmentation = self._segment_image(supplementary_rgb_image, input_boxes=[[[x1, y1, x2, y2]]])
+
+        # TODO: Filter out points that are not in the shadow of the original segmentation.
 
         return transferred_segmentation
 
@@ -101,6 +120,7 @@ class SamPointCloudSegmenter():
         base_segmentation_cloud = base_point_cloud[base_segmentation_masks[0]]
 
         point_clouds = [base_segmentation_cloud]
+        segmentation_masks = [base_segmentation_masks[0]]
 
         # Transfer the segmentation to the other point clouds.
         for supplementary_rgb_image, supplementary_point_cloud in zip(supplementary_rgb_images, supplementary_point_clouds):
@@ -109,12 +129,13 @@ class SamPointCloudSegmenter():
             
             # Add the resulting points.
             point_clouds.append(supplementary_point_cloud[transferred_segmentation_masks[0]])
+            segmentation_masks.append(transferred_segmentation_masks[0])
 
         point_cloud = np.concatenate(point_clouds).reshape(-1, 3)
         valid = ~(point_cloud == -10000).any(axis=-1)
         point_cloud = point_cloud[valid]
 
-        return np.ascontiguousarray(point_cloud)
+        return (np.ascontiguousarray(point_cloud), segmentation_masks)
 
 def test():
     import pickle
@@ -150,10 +171,18 @@ def test():
     x1, y1, x2, y2 = [int(x) for x in input("Bounding box: ").split()]
     bounding_box = [x1, y1, x2, y2]
 
-    segmenter.segment(base_rgb_image, base_point_cloud, bounding_box, supplementary_rgb_images, supplementary_point_clouds)
+    point_cloud, segmentation_masks = segmenter.segment(base_rgb_image, base_point_cloud, bounding_box, supplementary_rgb_images, supplementary_point_clouds)
+
+    # Visualize the resulting object segmentation.
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    ax.scatter(point_cloud[:, 0], point_cloud[:, 1], point_cloud[:, 2], s=0.5)
+    set_axes_equal(ax)
+    plt.show()
 
 
 if __name__ == '__main__':
     test()
 
 # 651 491 685 535
+# 745 405 796 515
