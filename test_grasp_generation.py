@@ -1,4 +1,5 @@
 import pickle
+import time
 
 import cv2
 import matplotlib.pyplot as plt
@@ -35,6 +36,7 @@ pcds = [smoothen_pcd(pcd) for pcd in pcds]
 
 show_rgb = True
 show_pcd = True
+show_rotated_voxel_clouds = False
 
 if show_rgb:
     plt.title("RGB Image")
@@ -120,10 +122,6 @@ object_points = object_points[~mask]
 object_point_colors = object_point_colors[~mask]
 
 grasps = []
-
-show_rotated_voxel_clouds = False
-
-import time
 
 start_time = time.time()
 
