@@ -10,9 +10,9 @@ def set_axes_equal(ax: plt.Axes):
       ax: a matplotlib axis, e.g., as output from plt.gca().
     """
 
-    x_limits = ax.get_xlim3d()
-    y_limits = ax.get_ylim3d()
-    z_limits = ax.get_zlim3d()
+    x_limits = ax.get_xlim3d() # type: ignore
+    y_limits = ax.get_ylim3d() # type: ignore
+    z_limits = ax.get_zlim3d() # type: ignore
 
     x_range = abs(x_limits[1] - x_limits[0])
     x_middle = np.mean(x_limits)
@@ -25,6 +25,6 @@ def set_axes_equal(ax: plt.Axes):
     # norm, hence I call half the max range the plot radius.
     plot_radius = 0.5*max([x_range, y_range, z_range])
 
-    ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
-    ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
-    ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
+    ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius]) # type: ignore
+    ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius]) # type: ignore
+    ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius]) # type: ignore
