@@ -139,6 +139,9 @@ class SamPointCloudSegmenter():
             (transferred_segmentation_masks, transferred_segmentation_scores) = \
                 self.transfer_segmentation(base_segmentation_masks[0].detach().cpu().numpy(), base_point_cloud, supplementary_rgb_image, supplementary_point_cloud)
             
+            if transferred_segmentation_masks is None:
+                continue
+
             # Add the resulting points.
             point_clouds.append(supplementary_point_cloud[transferred_segmentation_masks[0]])
             colors.append(np.array(supplementary_rgb_image)[transferred_segmentation_masks[0]])
